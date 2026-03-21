@@ -30,9 +30,38 @@ REDUTOR_FIXO = 312.89
 REDUTOR_A = 978.62
 REDUTOR_B = 0.133145
 
+# Tabelas do Simples para simulação do app
+# Fórmula da alíquota efetiva:
+# ((RBT12 * aliquota_nominal) - parcela_deduzir) / RBT12
+
+ANEXO_III = [
+    (180000.00, 0.06, 0.00),
+    (360000.00, 0.112, 9360.00),
+    (720000.00, 0.135, 17640.00),
+    (1800000.00, 0.16, 35640.00),
+    (3600000.00, 0.21, 125640.00),
+    (4800000.00, 0.33, 648000.00),
+]
+
+ANEXO_V = [
+    (180000.00, 0.155, 0.00),
+    (360000.00, 0.18, 4500.00),
+    (720000.00, 0.195, 9900.00),
+    (1800000.00, 0.205, 17100.00),
+    (3600000.00, 0.23, 62100.00),
+    (4800000.00, 0.305, 540000.00),
+]
+
+
+def brl(valor: float) -> str:
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def pct(valor: float) -> str:
+    return f"{valor * 100:.2f}%".replace(".", ",")
+
 
 def calcular_inss_clt(salario: float) -> float:
-    """Calcula INSS progressivo 2026."""
     inss = 0.0
     teto_anterior = 0.0
     base = min(salario, TETO_INSS)
@@ -40,11 +69,9 @@ def calcular_inss_clt(salario: float) -> float:
     for teto, aliquota in INSS_FAIXAS:
         if base <= teto_anterior:
             break
-
         faixa = min(base, teto) - teto_anterior
         inss += faixa * aliquota
         teto_anterior = teto
-
         if base <= teto:
             break
 
@@ -52,7 +79,6 @@ def calcular_inss_clt(salario: float) -> float:
 
 
 def calcular_base_irrf(salario: float, inss: float, num_dependentes: int) -> float:
-    """Calcula base do IRRF."""
     deducao_dep = num_dependentes * DEDUCAO_DEPENDENTE
     deducao_total = inss + deducao_dep
 
@@ -65,7 +91,6 @@ def calcular_base_irrf(salario: float, inss: float, num_dependentes: int) -> flo
 
 
 def calcular_irrf(base_calculo: float, renda_bruta: float) -> float:
-    """Calcula IRRF 2026 com redutor."""
     if base_calculo <= 0:
         return 0.0
 
@@ -95,7 +120,6 @@ def calcular_clt(
     desconto_vt: float = 0,
     num_dependentes: int = 0,
 ) -> dict:
-    """Calcula CLT."""
     fgts_emp = round(salario * 0.08, 2)
     dec_terceiro = round(salario / 12, 2)
     ferias_1_3 = round((salario / 12) * (4 / 3), 2)
@@ -124,9 +148,6 @@ def calcular_clt(
 
     poder_compra = round(liquido + vale_refeicao + ajuda_internet, 2)
 
-    aliq_efetiva_irrf = round((irrf / salario) * 100, 2) if salario else 0.0
-    carga_total = round((total_desc / salario) * 100, 2) if salario else 0.0
-
     return {
         "fgts_emp": fgts_emp,
         "dec_terceiro": dec_terceiro,
@@ -135,26 +156,89 @@ def calcular_clt(
         "inss": inss,
         "base_irrf": base_irrf,
         "irrf": irrf,
-        "aliq_efetiva_irrf": aliq_efetiva_irrf,
-        "carga_total": carga_total,
-        "desconto_saude": desconto_saude,
-        "desconto_vt": desconto_vt,
         "total_desc": total_desc,
         "liquido": liquido,
         "poder_compra": poder_compra,
-        "vale_refeicao": vale_refeicao,
-        "ajuda_internet": ajuda_internet,
         "liquido_anual": round(liquido * 12, 2),
-        "fgts_anual": round(fgts_emp * 12 * 1.4, 2),
-        "decimo_bruto": salario,
-        "ferias_brutas": round(salario * 4 / 3, 2),
+    }
+
+
+def obter_faixa_simples(rbt12: float, tabela: list) -> tuple:
+    for limite, aliquota, deducao in tabela:
+        if rbt12 <= limite:
+            return limite, aliquota, deducao
+    return tabela[-1]
+
+
+def calcular_aliquota_efetiva_simples(rbt12: float, tabela: list) -> dict:
+    limite, aliquota_nominal, parcela_deduzir = obter_faixa_simples(rbt12, tabela)
+    aliquota_efetiva = ((rbt12 * aliquota_nominal) - parcela_deduzir) / rbt12
+    aliquota_efetiva = max(0.0, aliquota_efetiva)
+
+    return {
+        "limite_faixa": limite,
+        "aliquota_nominal": aliquota_nominal,
+        "parcela_deduzir": parcela_deduzir,
+        "aliquota_efetiva": aliquota_efetiva,
+    }
+
+
+def calcular_fator_r(receita_mensal: float, prolabore_mensal: float) -> dict:
+    rbt12 = receita_mensal * 12
+    folha12 = prolabore_mensal * 12
+    fator_r = (folha12 / rbt12) if rbt12 > 0 else 0.0
+
+    return {
+        "rbt12": round(rbt12, 2),
+        "folha12": round(folha12, 2),
+        "fator_r": round(fator_r, 4),
+        "atingiu_fator_r": fator_r >= 0.28,
+    }
+
+
+def calcular_simples_tecnologia(receita_mensal: float, prolabore_mensal: float) -> dict:
+    fator = calcular_fator_r(receita_mensal, prolabore_mensal)
+
+    if fator["atingiu_fator_r"]:
+        anexo = "III"
+        tabela = ANEXO_III
+    else:
+        anexo = "V"
+        tabela = ANEXO_V
+
+    faixa = calcular_aliquota_efetiva_simples(fator["rbt12"], tabela)
+    imposto_mensal = round(receita_mensal * faixa["aliquota_efetiva"], 2)
+
+    return {
+        **fator,
+        **faixa,
+        "anexo": anexo,
+        "imposto_mensal": imposto_mensal,
+        "imposto_anual": round(imposto_mensal * 12, 2),
+    }
+
+
+def calcular_simples_generico(receita_mensal: float, anexo_manual: str = "III") -> dict:
+    rbt12 = receita_mensal * 12
+    tabela = ANEXO_III if anexo_manual == "III" else ANEXO_V
+    faixa = calcular_aliquota_efetiva_simples(rbt12, tabela)
+    imposto_mensal = round(receita_mensal * faixa["aliquota_efetiva"], 2)
+
+    return {
+        "rbt12": round(rbt12, 2),
+        "anexo": anexo_manual,
+        **faixa,
+        "imposto_mensal": imposto_mensal,
+        "imposto_anual": round(imposto_mensal * 12, 2),
     }
 
 
 def calcular_pj(
-    prolabore: float,
-    bonus_mensal: float = 0,
-    aliquota_simples: float = 0.09,
+    receita_mensal: float,
+    prolabore_mensal: float,
+    distribuicao_lucros_mensal: float = 0,
+    empresa_tecnologia: bool = True,
+    anexo_manual: str = "III",
     plano_saude: float = 0,
     honorarios_contador: float = 0,
     aluguel_coworking: float = 0,
@@ -166,14 +250,14 @@ def calcular_pj(
     provisionar_fgts: bool = True,
     num_dependentes: int = 0,
 ) -> dict:
-    """Calcula PJ."""
-    total_pacote = round(prolabore + bonus_mensal, 2)
+    if empresa_tecnologia:
+        simples = calcular_simples_tecnologia(receita_mensal, prolabore_mensal)
+    else:
+        simples = calcular_simples_generico(receita_mensal, anexo_manual)
 
-    imposto_pj = round(prolabore * aliquota_simples, 2)
-
-    inss_pj = calcular_inss_clt(prolabore)
-    base_irrf = calcular_base_irrf(prolabore, inss_pj, num_dependentes)
-    irrf_pj = calcular_irrf(base_irrf, prolabore)
+    inss_pj = calcular_inss_clt(prolabore_mensal)
+    base_irrf = calcular_base_irrf(prolabore_mensal, inss_pj, num_dependentes)
+    irrf_pj = calcular_irrf(base_irrf, prolabore_mensal)
 
     total_gastos = round(
         plano_saude
@@ -185,15 +269,15 @@ def calcular_pj(
         2,
     )
 
-    res_ferias = round(prolabore * 0.0833, 2) if provisionar_ferias else 0.0
-    res_decimo = round(prolabore * 0.0833, 2) if provisionar_decimo else 0.0
-    res_fgts = round(prolabore * 0.08, 2) if provisionar_fgts else 0.0
+    res_ferias = round(prolabore_mensal * 0.0833, 2) if provisionar_ferias else 0.0
+    res_decimo = round(prolabore_mensal * 0.0833, 2) if provisionar_decimo else 0.0
+    res_fgts = round(prolabore_mensal * 0.08, 2) if provisionar_fgts else 0.0
     total_res = round(res_ferias + res_decimo + res_fgts, 2)
 
-    liquido = round(
-        prolabore
-        + bonus_mensal
-        - imposto_pj
+    liquido_pessoal = round(
+        prolabore_mensal
+        + distribuicao_lucros_mensal
+        - simples["imposto_mensal"]
         - inss_pj
         - irrf_pj
         - total_gastos
@@ -201,17 +285,14 @@ def calcular_pj(
         2,
     )
 
-    aliq_efetiva_irrf = round((irrf_pj / prolabore) * 100, 2) if prolabore else 0.0
-    carga_total = round(((imposto_pj + inss_pj + irrf_pj) / prolabore) * 100, 2) if prolabore else 0.0
-
     return {
-        "total_pacote": total_pacote,
-        "imposto_pj": imposto_pj,
+        **simples,
+        "receita_mensal": round(receita_mensal, 2),
+        "prolabore_mensal": round(prolabore_mensal, 2),
+        "distribuicao_lucros_mensal": round(distribuicao_lucros_mensal, 2),
         "inss_pj": inss_pj,
         "base_irrf": base_irrf,
         "irrf_pj": irrf_pj,
-        "aliq_efetiva_irrf": aliq_efetiva_irrf,
-        "carga_total": carga_total,
         "plano_saude": plano_saude,
         "honorarios_contador": honorarios_contador,
         "aluguel_coworking": aluguel_coworking,
@@ -223,16 +304,12 @@ def calcular_pj(
         "res_decimo": res_decimo,
         "res_fgts": res_fgts,
         "total_res": total_res,
-        "liquido": liquido,
-        "liquido_anual": round(liquido * 12, 2),
+        "liquido": liquido_pessoal,
+        "liquido_anual": round(liquido_pessoal * 12, 2),
         "reservas_anuais": round(total_res * 12, 2),
     }
 
 
-def brl(valor: float) -> str:
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
 if __name__ == "__main__":
-    print("Este arquivo agora é a base de cálculo do app.")
-    print("Para abrir a interface visual, rode: streamlit run app.py")
+    print("Base de cálculo carregada com suporte a Fator R.")
+    print("Use: streamlit run app.py")
